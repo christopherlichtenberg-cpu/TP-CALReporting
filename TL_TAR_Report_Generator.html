@@ -341,6 +341,72 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return "FF" + hex(R) + hex(G) + hex(B);
     }
 
+    // --- TransPerfect brand styling for output sheets ----------------------
+    // Brand Guidelines 2.0: Verdana (the guide's web-friendly system typeface, so files
+    // render the same on any device without Poppins/Montserrat installed),
+    // Dark Blue #003b71 / Light Blue #139dd8 primaries, white text on core blues,
+    // supporting neutrals Blue White #e0e8f5, Light Gray #f2f2f2, Dark Gray #666666.
+    // Rate columns keep their red→yellow→green conditional fills.
+    var BRAND = {
+      font:      "Verdana",
+      darkBlue:  "FF003B71",
+      lightBlue: "FF139DD8",
+      blueWhite: "FFE0E8F5",
+      lightGray: "FFF2F2F2",
+      white:     "FFFFFFFF"
+    };
+
+    // opts: { lastRow, lastCol, rateCols: [col,...], dividerCols: [col,...] }
+    function brandSheet(ws, opts) {
+      var rateCols = opts.rateCols || [], dividers = opts.dividerCols || [];
+      var solid = function (argb) { return { type: "pattern", pattern: "solid", fgColor: { argb: argb } }; };
+      var line  = function (style, argb) { return { style: style, color: { argb: argb } }; };
+
+      // Grand Total row / column (TAR report) are emphasised like a totals band
+      var totalRow = null, totalCol = null;
+      for (var r0 = 2; r0 <= opts.lastRow; r0++) {
+        if (normalize(ws.getCell(r0, 1).value) === "grand total") { totalRow = r0; break; }
+      }
+      for (var c0 = 2; c0 <= opts.lastCol; c0++) {
+        if (normalize(ws.getCell(1, c0).value) === "grand total") { totalCol = c0; break; }
+      }
+
+      for (var r = 1; r <= opts.lastRow; r++) {
+        for (var c = 1; c <= opts.lastCol; c++) {
+          var cell = ws.getCell(r, c);
+          var isRate = rateCols.indexOf(c) !== -1;
+          var border = { bottom: line("thin", BRAND.blueWhite) };
+          if (dividers.indexOf(c) !== -1) border.left = line("thin", BRAND.darkBlue);
+
+          if (r === 1) {
+            cell.font = { name: BRAND.font, size: 10, bold: true, color: { argb: BRAND.white } };
+            cell.fill = solid(BRAND.darkBlue);
+            cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+            border.bottom = line("medium", BRAND.lightBlue);
+            if (border.left) border.left = line("thin", BRAND.white);
+          } else {
+            var isTotal = r === totalRow || c === totalCol;
+            cell.font = { name: BRAND.font, size: 10, bold: isTotal || c === 1, color: { argb: BRAND.darkBlue } };
+            cell.alignment = { vertical: "middle", horizontal: c === 1 ? "left" : "right" };
+            if (r === totalRow) border.top = line("thin", BRAND.darkBlue);
+            if (!isRate) {
+              if (isTotal)          cell.fill = solid(BRAND.blueWhite);
+              else if (r % 2 === 1) cell.fill = solid(BRAND.lightGray);   // banded rows
+              else                  cell.fill = { type: "pattern", pattern: "none" };
+            }
+          }
+          cell.border = border;
+        }
+      }
+
+      ws.getRow(1).height = Math.max(ws.getRow(1).height || 0, 30);
+      // Verdana sets wider than Arial/Calibri — widen auto-fitted columns
+      for (var cw = 1; cw <= opts.lastCol; cw++) {
+        var col = ws.getColumn(cw);
+        col.width = Math.round((col.width || 10) * 1.15 + 1);
+      }
+    }
+
     // RFC-4180 CSV parser (handles quoted fields, embedded commas, CRLF/LF, UTF-8 BOM)
     function parseCSV(text) {
       if (text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
@@ -475,6 +541,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ws.getColumn(ac).width = maxLen + 2;
       }
       ws.getColumn(rateColIdx).width = 10;
+      brandSheet(ws, { lastRow: formulaEnd, lastCol: rateColIdx, rateCols: [rateColIdx] });
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
       var out = await wb.xlsx.writeBuffer();
@@ -678,6 +745,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
       ws.getColumn(rateColIdx).width = 10; // percentage values are short
 
+      brandSheet(ws, { lastRow: formulaEnd, lastCol: rateColIdx, rateCols: [rateColIdx] });
+
       // Freeze top row
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
@@ -846,10 +915,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var parsed = brsParse(await brsReadRows(file, isCsv));
       var rounds = parsed.rounds;
 
-      var hdrFont  = { bold: true, color: { argb: "FF4771B0" }, name: "Arial", size: 9 };
-      var hdrFill  = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F7F7" } };
-      var hdrAlign = { vertical: "middle", horizontal: "center", wrapText: true };
-
       var headers = [
         "Round", "Relevant", "Not Relevant", "Total Coded", "Relevance %",
         "Cumulative Relevant", "Cumulative Not Relevant", "Cumulative Total", "Cumulative Relevance %"
@@ -860,11 +925,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var wb = new ExcelJS.Workbook();
       var ws = wb.addWorksheet("CAL Round Report");
 
-      headers.forEach(function (h, i) {
-        var cell = ws.getCell(1, i + 1);
-        cell.value = h; cell.font = hdrFont; cell.fill = hdrFill; cell.alignment = hdrAlign;
-      });
-      ws.getRow(1).height = 30;
+      headers.forEach(function (h, i) { ws.getCell(1, i + 1).value = h; });
 
       rounds.forEach(function (x, i) {
         var r = i + 2;
@@ -872,7 +933,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var cumRate = (x.cumPos + x.cumNeg) > 0 ? x.cumPos / (x.cumPos + x.cumNeg) : 0;
 
         ws.getCell(r, 1).value = x.num != null ? x.num : x.label;
-        ws.getCell(r, 1).alignment = { horizontal: "center" };
 
         ws.getCell(r, 2).value = x.pos;
         ws.getCell(r, 3).value = x.neg;
@@ -891,15 +951,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         });
       });
 
-      // Thin separator between the per-round and cumulative blocks
-      for (var r2 = 1; r2 <= rounds.length + 1; r2++) {
-        ws.getCell(r2, 6).border = { left: { style: "thin", color: { argb: "FFBFBFBF" } } };
-      }
-
       ws.getColumn(1).width = Math.max(8, Math.max.apply(null, rounds.map(function (x) {
         return String(x.num != null ? x.num : x.label).length;
       })) + 2);
       for (var c2 = 2; c2 <= 9; c2++) ws.getColumn(c2).width = 13;
+      // Divider between the per-round and cumulative blocks
+      brandSheet(ws, { lastRow: rounds.length + 1, lastCol: 9, rateCols: [5, 9], dividerCols: [6] });
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
       var out = await wb.xlsx.writeBuffer();
