@@ -845,24 +845,20 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     async function buildBrsReport(file, isCsv) {
       var parsed = brsParse(await brsReadRows(file, isCsv));
       var rounds = parsed.rounds;
-      var showType = rounds.some(function (x) { return x.type; });
 
       var hdrFont  = { bold: true, color: { argb: "FF4771B0" }, name: "Arial", size: 9 };
       var hdrFill  = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F7F7" } };
       var hdrAlign = { vertical: "middle", horizontal: "center", wrapText: true };
 
-      var headers = ["Round"];
-      if (showType) headers.push("Round Type");
-      headers = headers.concat([
-        "Relevant", "Not Relevant", "Total Coded", "Relevance %",
+      var headers = [
+        "Round", "Relevant", "Not Relevant", "Total Coded", "Relevance %",
         "Cumulative Relevant", "Cumulative Not Relevant", "Cumulative Total", "Cumulative Relevance %"
-      ]);
-      var off = showType ? 1 : 0;           // column offset introduced by Round Type
-      var C = function (n) { return colLetter(n + off); };
-      // Column letters (1-based positions before offset): 2=Rel 3=NotRel 4=Total 5=% 6=CumRel 7=CumNot 8=CumTot 9=Cum%
+      ];
+      var C = function (n) { return colLetter(n); };
+      // Columns: 1=Round 2=Rel 3=NotRel 4=Total 5=% 6=CumRel 7=CumNot 8=CumTot 9=Cum%
 
       var wb = new ExcelJS.Workbook();
-      var ws = wb.addWorksheet("BRS Round Report");
+      var ws = wb.addWorksheet("CAL Round Report");
 
       headers.forEach(function (h, i) {
         var cell = ws.getCell(1, i + 1);
@@ -877,20 +873,19 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
         ws.getCell(r, 1).value = x.num != null ? x.num : x.label;
         ws.getCell(r, 1).alignment = { horizontal: "center" };
-        if (showType) ws.getCell(r, 2).value = x.type;
 
-        ws.getCell(r, 2 + off).value = x.pos;
-        ws.getCell(r, 3 + off).value = x.neg;
-        ws.getCell(r, 4 + off).value = { formula: C(2) + r + "+" + C(3) + r, result: x.pos + x.neg };
-        ws.getCell(r, 5 + off).value = { formula: "IFERROR(" + C(2) + r + "/" + C(4) + r + ",0)", result: rate };
-        ws.getCell(r, 6 + off).value = x.cumPos;
-        ws.getCell(r, 7 + off).value = x.cumNeg;
-        ws.getCell(r, 8 + off).value = { formula: C(6) + r + "+" + C(7) + r, result: x.cumPos + x.cumNeg };
-        ws.getCell(r, 9 + off).value = { formula: "IFERROR(" + C(6) + r + "/" + C(8) + r + ",0)", result: cumRate };
+        ws.getCell(r, 2).value = x.pos;
+        ws.getCell(r, 3).value = x.neg;
+        ws.getCell(r, 4).value = { formula: C(2) + r + "+" + C(3) + r, result: x.pos + x.neg };
+        ws.getCell(r, 5).value = { formula: "IFERROR(" + C(2) + r + "/" + C(4) + r + ",0)", result: rate };
+        ws.getCell(r, 6).value = x.cumPos;
+        ws.getCell(r, 7).value = x.cumNeg;
+        ws.getCell(r, 8).value = { formula: C(6) + r + "+" + C(7) + r, result: x.cumPos + x.cumNeg };
+        ws.getCell(r, 9).value = { formula: "IFERROR(" + C(6) + r + "/" + C(8) + r + ",0)", result: cumRate };
 
-        [2, 3, 4, 6, 7, 8].forEach(function (c) { ws.getCell(r, c + off).numFmt = "#,##0"; });
+        [2, 3, 4, 6, 7, 8].forEach(function (c) { ws.getCell(r, c).numFmt = "#,##0"; });
         [[5, rate], [9, cumRate]].forEach(function (p) {
-          var cell = ws.getCell(r, p[0] + off);
+          var cell = ws.getCell(r, p[0]);
           cell.numFmt = "0.00%";
           cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: rateArgb(p[1]) } };
         });
@@ -898,14 +893,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
       // Thin separator between the per-round and cumulative blocks
       for (var r2 = 1; r2 <= rounds.length + 1; r2++) {
-        ws.getCell(r2, 6 + off).border = { left: { style: "thin", color: { argb: "FFBFBFBF" } } };
+        ws.getCell(r2, 6).border = { left: { style: "thin", color: { argb: "FFBFBFBF" } } };
       }
 
       ws.getColumn(1).width = Math.max(8, Math.max.apply(null, rounds.map(function (x) {
         return String(x.num != null ? x.num : x.label).length;
       })) + 2);
-      if (showType) ws.getColumn(2).width = Math.max(12, Math.max.apply(null, rounds.map(function (x) { return x.type.length; })) + 2);
-      for (var c2 = 2 + off; c2 <= 9 + off; c2++) ws.getColumn(c2).width = 13;
+      for (var c2 = 2; c2 <= 9; c2++) ws.getColumn(c2).width = 13;
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
       var out = await wb.xlsx.writeBuffer();
@@ -932,7 +926,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var tot = x.pos + x.neg, cTot = x.cumPos + x.cumNeg;
         var tr = document.createElement("tr");
         var cells = [
-          [x.num != null ? (x.type ? x.type + " " : "") + "Round " + x.num : x.label, "text-left font-semibold"],
+          [x.num != null ? "Round " + x.num : x.label, "text-left font-semibold"],
           [fmt(x.pos), "border-l border-slate-100"], [fmt(x.neg)], [fmt(tot)],
           [pct(x.pos, tot), "font-semibold", tot > 0 ? x.pos / tot : 0],
           [fmt(x.cumPos), "border-l border-slate-100"], [fmt(x.cumNeg)], [fmt(cTot)],
