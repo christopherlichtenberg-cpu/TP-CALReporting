@@ -371,13 +371,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       white:     "FFFFFFFF"
     };
 
-    // opts: { lastRow, lastCol, rateCols: [col,...], dividerCols: [col,...] }
+    // opts: { lastRow, lastCol, rateCols: [col,...] }
     function brandSheet(ws, opts) {
-      var rateCols = opts.rateCols || [], dividers = opts.dividerCols || [];
+      var rateCols = opts.rateCols || [];
       var solid = function (argb) { return { type: "pattern", pattern: "solid", fgColor: { argb: argb } }; };
       var line  = function (style, argb) { return { style: style, color: { argb: argb } }; };
 
-      // Grand Total row / column (TAR report) are emphasised like a totals band
+      // Grand Total row / column are emphasised as a totals band
       var totalRow = null, totalCol = null;
       for (var r0 = 2; r0 <= opts.lastRow; r0++) {
         if (normalize(ws.getCell(r0, 1).value) === "grand total") { totalRow = r0; break; }
@@ -389,46 +389,40 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       for (var r = 1; r <= opts.lastRow; r++) {
         for (var c = 1; c <= opts.lastCol; c++) {
           var cell = ws.getCell(r, c);
-          var border = { bottom: line("thin", BRAND.blueWhite) };
-          if (dividers.indexOf(c) !== -1) border.left = line("thin", BRAND.darkBlue);
-
+          var isRate = rateCols.indexOf(c) !== -1;
+          // Build a fresh style object per cell: cells loaded from the source
+          // workbook can share one style object, so mutating cell.font etc.
+          // in place would leak formats (e.g. number formats) to other cells.
+          var st = { numFmt: cell.numFmt, border: { bottom: line("thin", BRAND.blueWhite) } };
           if (r === 1) {
-            cell.font = { name: BRAND.font, size: 10, bold: true, color: { argb: BRAND.white } };
-            cell.fill = solid(BRAND.darkBlue);
-            cell.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
-            border.bottom = line("medium", BRAND.lightBlue);
-            if (border.left) border.left = line("thin", BRAND.white);
+            st.font = { name: BRAND.font, size: 10, bold: true, color: { argb: BRAND.white } };
+            st.fill = solid(BRAND.darkBlue);
+            st.alignment = { vertical: "middle", horizontal: "center", wrapText: true };
+            st.border.bottom = line("medium", BRAND.lightBlue);
           } else {
             var isTotal = r === totalRow || c === totalCol;
-            cell.font = { name: BRAND.font, size: 10, bold: isTotal || c === 1, color: { argb: BRAND.darkBlue } };
-            cell.alignment = { vertical: "middle", horizontal: c === 1 ? "left" : "right" };
-            if (r === totalRow) border.top = line("thin", BRAND.darkBlue);
-            if (isTotal)          cell.fill = solid(BRAND.blueWhite);
-            else if (r % 2 === 1) cell.fill = solid(BRAND.lightGray);   // banded rows
-            else                  cell.fill = { type: "pattern", pattern: "none" };
+            st.font = { name: BRAND.font, size: 10, bold: isTotal || c === 1, color: { argb: BRAND.darkBlue } };
+            st.alignment = { vertical: "middle", horizontal: c === 1 ? "left" : "right" };
+            if (r === totalRow) st.border.top = line("thin", BRAND.darkBlue);
+            // Rate cells get no fill; their colour comes from conditional formatting
+            if (!isRate) {
+              if (isTotal)          st.fill = solid(BRAND.blueWhite);
+              else if (r % 2 === 1) st.fill = solid(BRAND.lightGray);   // banded rows
+            }
           }
-          cell.border = border;
+          cell.style = st;
         }
       }
 
-      // Rate columns: Excel's standard Red-Yellow-Green 3-colour scale as live
-      // conditional formatting. The Grand Total and "Not in TAR - Exclusions"
-      // rows are left out so they don't skew the scale.
-      var runs = [], start = null;
-      for (var rr = 2; rr <= opts.lastRow + 1; rr++) {
-        var skip = rr > opts.lastRow || rr === totalRow ||
-                   normalize(ws.getCell(rr, 1).value) === EXCLUSIONS_LABEL.toLowerCase();
-        if (!skip && start === null) start = rr;
-        if (skip && start !== null) { runs.push([start, rr - 1]); start = null; }
-      }
+      // Rate columns: 3-colour scale conditional format with fixed points
+      // 0% red → 50% yellow → 100% green (same colours/scale as the original report)
       rateCols.forEach(function (rc, i) {
-        if (runs.length === 0) return;
         var L = colLetter(rc);
         ws.addConditionalFormatting({
-          ref: runs.map(function (x) { return L + x[0] + ":" + L + x[1]; }).join(" "),
+          ref: L + "2:" + L + opts.lastRow,
           rules: [{
             type: "colorScale", priority: i + 1,
-            cfvo:  [{ type: "min" }, { type: "percentile", value: 50 }, { type: "max" }],
+            cfvo:  [{ type: "num", value: 0 }, { type: "num", value: 0.5 }, { type: "num", value: 1 }],
             color: [{ argb: "FFF8696B" }, { argb: "FFFFEB84" }, { argb: "FF63BE7B" }]
           }]
         });
@@ -742,7 +736,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var cells = [];
         for (var sc = 1; sc <= grandTotalIdx; sc++) {
           var scell = ws.getCell(sr, sc);
-          cells.push({ value: scell.value, numFmt: scell.numFmt });
+          cells.push({ value: scell.value, style: JSON.parse(JSON.stringify(scell.style || {})) });
         }
         sortRows.push(cells);
       }
@@ -751,7 +745,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         cells.forEach(function (cv, j) {
           var tcell = ws.getCell(i + 2, j + 1);
           tcell.value = cv.value;
-          tcell.numFmt = cv.numFmt;
+          tcell.style = cv.style;
         });
       });
 
@@ -972,6 +966,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var parsed = brsParse(await brsReadRows(file, isCsv));
       var rounds = parsed.rounds;
 
+      var hdrFont  = { bold: true, color: { argb: "FF4771B0" }, name: "Arial", size: 9 };
+      var hdrFill  = { type: "pattern", pattern: "solid", fgColor: { argb: "FFF7F7F7" } };
+      var hdrAlign = { vertical: "middle", horizontal: "center", wrapText: true };
+
       var headers = [
         "Round", "Relevant", "Not Relevant", "Total Coded", "Relevance %",
         "Cumulative Relevant", "Cumulative Not Relevant", "Cumulative Total", "Cumulative Relevance %"
@@ -982,7 +980,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       var wb = new ExcelJS.Workbook();
       var ws = wb.addWorksheet("CAL Round Report");
 
-      headers.forEach(function (h, i) { ws.getCell(1, i + 1).value = h; });
+      headers.forEach(function (h, i) {
+        var cell = ws.getCell(1, i + 1);
+        cell.value = h; cell.font = hdrFont; cell.fill = hdrFill; cell.alignment = hdrAlign;
+      });
+      ws.getRow(1).height = 30;
 
       rounds.forEach(function (x, i) {
         var r = i + 2;
@@ -990,6 +992,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var cumRate = (x.cumPos + x.cumNeg) > 0 ? x.cumPos / (x.cumPos + x.cumNeg) : 0;
 
         ws.getCell(r, 1).value = x.num != null ? x.num : x.label;
+        ws.getCell(r, 1).alignment = { horizontal: "center" };
 
         ws.getCell(r, 2).value = x.pos;
         ws.getCell(r, 3).value = x.neg;
@@ -1001,16 +1004,22 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ws.getCell(r, 9).value = { formula: "IFERROR(" + C(6) + r + "/" + C(8) + r + ",0)", result: cumRate };
 
         [2, 3, 4, 6, 7, 8].forEach(function (c) { ws.getCell(r, c).numFmt = "#,##0"; });
-        ws.getCell(r, 5).numFmt = "0.00%";
-        ws.getCell(r, 9).numFmt = "0.00%";
+        [[5, rate], [9, cumRate]].forEach(function (p) {
+          var cell = ws.getCell(r, p[0]);
+          cell.numFmt = "0.00%";
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: rateArgb(p[1]) } };
+        });
       });
+
+      // Thin separator between the per-round and cumulative blocks
+      for (var r2 = 1; r2 <= rounds.length + 1; r2++) {
+        ws.getCell(r2, 6).border = { left: { style: "thin", color: { argb: "FFBFBFBF" } } };
+      }
 
       ws.getColumn(1).width = Math.max(8, Math.max.apply(null, rounds.map(function (x) {
         return String(x.num != null ? x.num : x.label).length;
       })) + 2);
       for (var c2 = 2; c2 <= 9; c2++) ws.getColumn(c2).width = 13;
-      // Divider between the per-round and cumulative blocks
-      brandSheet(ws, { lastRow: rounds.length + 1, lastCol: 9, rateCols: [5, 9], dividerCols: [6] });
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
       var out = await wb.xlsx.writeBuffer();
