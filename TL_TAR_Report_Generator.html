@@ -341,6 +341,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       return "FF" + hex(R) + hex(G) + hex(B);
     }
 
+    // --- TAR row order: "Not in TAR - Exclusions" first, then TAR Score
+    // descending (largest to smallest), then any other labels.
+    var EXCLUSIONS_LABEL = "Not in TAR - Exclusions";
+    function tarSortKey(label) {
+      var n = normalize(label);
+      if (n === EXCLUSIONS_LABEL.toLowerCase() || n === "(blank)" || n === "blank") return [0, 0];
+      var num = typeof label === "number" ? label : parseFloat(asString(label).replace(/,/g, ""));
+      if (!isNaN(num) && asString(label).trim() !== "") return [1, -num];
+      return [2, 0];
+    }
+    function compareTarLabels(a, b) {
+      var ka = tarSortKey(a), kb = tarSortKey(b);
+      return ka[0] - kb[0] || ka[1] - kb[1];
+    }
+
     // --- TransPerfect brand styling for output sheets ----------------------
     // Brand Guidelines 2.0: Verdana (the guide's web-friendly system typeface, so files
     // render the same on any device without Poppins/Montserrat installed),
@@ -374,7 +389,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       for (var r = 1; r <= opts.lastRow; r++) {
         for (var c = 1; c <= opts.lastCol; c++) {
           var cell = ws.getCell(r, c);
-          var isRate = rateCols.indexOf(c) !== -1;
           var border = { bottom: line("thin", BRAND.blueWhite) };
           if (dividers.indexOf(c) !== -1) border.left = line("thin", BRAND.darkBlue);
 
@@ -389,15 +403,36 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             cell.font = { name: BRAND.font, size: 10, bold: isTotal || c === 1, color: { argb: BRAND.darkBlue } };
             cell.alignment = { vertical: "middle", horizontal: c === 1 ? "left" : "right" };
             if (r === totalRow) border.top = line("thin", BRAND.darkBlue);
-            if (!isRate) {
-              if (isTotal)          cell.fill = solid(BRAND.blueWhite);
-              else if (r % 2 === 1) cell.fill = solid(BRAND.lightGray);   // banded rows
-              else                  cell.fill = { type: "pattern", pattern: "none" };
-            }
+            if (isTotal)          cell.fill = solid(BRAND.blueWhite);
+            else if (r % 2 === 1) cell.fill = solid(BRAND.lightGray);   // banded rows
+            else                  cell.fill = { type: "pattern", pattern: "none" };
           }
           cell.border = border;
         }
       }
+
+      // Rate columns: Excel's standard Red-Yellow-Green 3-colour scale as live
+      // conditional formatting. The Grand Total and "Not in TAR - Exclusions"
+      // rows are left out so they don't skew the scale.
+      var runs = [], start = null;
+      for (var rr = 2; rr <= opts.lastRow + 1; rr++) {
+        var skip = rr > opts.lastRow || rr === totalRow ||
+                   normalize(ws.getCell(rr, 1).value) === EXCLUSIONS_LABEL.toLowerCase();
+        if (!skip && start === null) start = rr;
+        if (skip && start !== null) { runs.push([start, rr - 1]); start = null; }
+      }
+      rateCols.forEach(function (rc, i) {
+        if (runs.length === 0) return;
+        var L = colLetter(rc);
+        ws.addConditionalFormatting({
+          ref: runs.map(function (x) { return L + x[0] + ":" + L + x[1]; }).join(" "),
+          rules: [{
+            type: "colorScale", priority: i + 1,
+            cfvo:  [{ type: "min" }, { type: "percentile", value: 50 }, { type: "max" }],
+            color: [{ argb: "FFF8696B" }, { argb: "FFFFEB84" }, { argb: "FF63BE7B" }]
+          }]
+        });
+      });
 
       ws.getRow(1).height = Math.max(ws.getRow(1).height || 0, 30);
       // Verdana sets wider than Arial/Calibri — widen auto-fitted columns
@@ -472,6 +507,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
       if (lastDataRow === null) throw new Error("No data rows found.");
 
+      // Sort data rows (rows[1] .. rows[lastDataRow-1]); Grand Total stays last
+      var dataRows = rows.slice(1, lastDataRow);
+      dataRows.sort(function (a, b) { return compareTarLabels(a[0], b[0]); });
+      Array.prototype.splice.apply(rows, [1, dataRows.length].concat(dataRows));
+
       var formulaEnd  = grandTotalRow || lastDataRow;
       var rateColIdx  = grandTotalIdx + 1;
       var rateLetter  = colLetter(rateColIdx);
@@ -499,7 +539,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           } else {
             var raw = dataRow[ci] != null ? dataRow[ci] : "";
             if (ci === 0 && ["(blank)","blank"].indexOf(normalize(raw)) !== -1)
-              raw = "Not in TAR - Exclusions";
+              raw = EXCLUSIONS_LABEL;
             var stripped = raw.replace(/,/g, "");
             var num = parseFloat(stripped);
             if (!isNaN(num) && raw !== "") {
@@ -523,7 +563,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           var rate = tot > 0 ? pv / tot : 0;
           rateCell.value  = { formula: "IFERROR(" + posLetter + wsRowNum + "/(" + posLetter + wsRowNum + "+" + negLetter + wsRowNum + "),0)", result: rate };
           rateCell.numFmt = "0.00%";
-          rateCell.fill   = { type: "pattern", pattern: "solid", fgColor: { argb: rateArgb(rate) } };
         }
       }
 
@@ -666,7 +705,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       for (var r = 2; r <= totalRows; r++) {
         var v = ws.getCell(r, 1).value;
         if (typeof v === "string" && ["(blank)", "blank"].indexOf(normalize(v)) !== -1) {
-          ws.getCell(r, 1).value = "Not in TAR - Exclusions";
+          ws.getCell(r, 1).value = EXCLUSIONS_LABEL;
         }
       }
 
@@ -697,6 +736,25 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       }
       if (lastDataRow === null) throw new Error("No data rows found.");
 
+      // Sort data rows 2..lastDataRow; Grand Total stays last
+      var sortRows = [];
+      for (var sr = 2; sr <= lastDataRow; sr++) {
+        var cells = [];
+        for (var sc = 1; sc <= grandTotalIdx; sc++) {
+          var scell = ws.getCell(sr, sc);
+          cells.push({ value: scell.value, numFmt: scell.numFmt });
+        }
+        sortRows.push(cells);
+      }
+      sortRows.sort(function (a, b) { return compareTarLabels(a[0].value, b[0].value); });
+      sortRows.forEach(function (cells, i) {
+        cells.forEach(function (cv, j) {
+          var tcell = ws.getCell(i + 2, j + 1);
+          tcell.value = cv.value;
+          tcell.numFmt = cv.numFmt;
+        });
+      });
+
       // Add Rate column
       var rateColIdx = grandTotalIdx + 1;
       var rateLetter = colLetter(rateColIdx);
@@ -725,7 +783,6 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var cell = ws.getCell(r3, rateColIdx);
         cell.value = { formula: "IFERROR(" + posLetter + r3 + "/(" + posLetter + r3 + "+" + negLetter + r3 + "),0)", result: rate };
         cell.numFmt = "0.00%";
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: rateArgb(rate) } };
       }
 
       // Auto-fit all columns to their content
@@ -944,11 +1001,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         ws.getCell(r, 9).value = { formula: "IFERROR(" + C(6) + r + "/" + C(8) + r + ",0)", result: cumRate };
 
         [2, 3, 4, 6, 7, 8].forEach(function (c) { ws.getCell(r, c).numFmt = "#,##0"; });
-        [[5, rate], [9, cumRate]].forEach(function (p) {
-          var cell = ws.getCell(r, p[0]);
-          cell.numFmt = "0.00%";
-          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: rateArgb(p[1]) } };
-        });
+        ws.getCell(r, 5).numFmt = "0.00%";
+        ws.getCell(r, 9).numFmt = "0.00%";
       });
 
       ws.getColumn(1).width = Math.max(8, Math.max.apply(null, rounds.map(function (x) {
