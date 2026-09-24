@@ -371,9 +371,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       white:     "FFFFFFFF"
     };
 
-    // opts: { lastRow, lastCol, rateCols: [col,...] }
+    // opts: { lastRow, lastCol,
+    //         rateCols:     [col,...]  rate columns coloured by conditional formatting (TAR)
+    //         keepFillCols: [col,...]  columns whose existing cell shading is kept as-is (BRS %)
+    //         dividerCols:  [col,...]  columns with a dark blue divider on their left edge }
     function brandSheet(ws, opts) {
-      var rateCols = opts.rateCols || [];
+      var rateCols = opts.rateCols || [], keepFill = opts.keepFillCols || [], dividers = opts.dividerCols || [];
       var solid = function (argb) { return { type: "pattern", pattern: "solid", fgColor: { argb: argb } }; };
       var line  = function (style, argb) { return { style: style, color: { argb: argb } }; };
 
@@ -394,6 +397,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           // workbook can share one style object, so mutating cell.font etc.
           // in place would leak formats (e.g. number formats) to other cells.
           var st = { numFmt: cell.numFmt, border: { bottom: line("thin", BRAND.blueWhite) } };
+          if (dividers.indexOf(c) !== -1) st.border.left = line("thin", r === 1 ? BRAND.white : BRAND.darkBlue);
           if (r === 1) {
             st.font = { name: BRAND.font, size: 10, bold: true, color: { argb: BRAND.white } };
             st.fill = solid(BRAND.darkBlue);
@@ -404,8 +408,11 @@ https://github.com/nodeca/pako/blob/main/LICENSE
             st.font = { name: BRAND.font, size: 10, bold: isTotal || c === 1, color: { argb: BRAND.darkBlue } };
             st.alignment = { vertical: "middle", horizontal: c === 1 ? "left" : "right" };
             if (r === totalRow) st.border.top = line("thin", BRAND.darkBlue);
-            // Rate cells get no fill; their colour comes from conditional formatting
-            if (!isRate) {
+            // Rate cells get no fill (colour comes from conditional formatting);
+            // keep-fill cells retain the shading already applied to them.
+            if (keepFill.indexOf(c) !== -1) {
+              if (cell.fill && cell.fill.type) st.fill = JSON.parse(JSON.stringify(cell.fill));
+            } else if (!isRate) {
               if (isTotal)          st.fill = solid(BRAND.blueWhite);
               else if (r % 2 === 1) st.fill = solid(BRAND.lightGray);   // banded rows
             }
@@ -1020,6 +1027,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         return String(x.num != null ? x.num : x.label).length;
       })) + 2);
       for (var c2 = 2; c2 <= 9; c2++) ws.getColumn(c2).width = 13;
+      // Brand styling; the % columns (5, 9) keep their existing shading exactly
+      brandSheet(ws, { lastRow: rounds.length + 1, lastCol: 9, keepFillCols: [5, 9], dividerCols: [6] });
       ws.views = [{ state: "frozen", xSplit: 0, ySplit: 1 }];
 
       var out = await wb.xlsx.writeBuffer();
